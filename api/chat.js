@@ -129,23 +129,33 @@ export default async function handler(req, res) {
       content: String(m.content || '').slice(0, 500)
     }));
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 600,
-        system: SYSTEM_PROMPT,
-        messages: clean
-      })
-    });
+    // Retry logic for 529 (overloaded) errors — up to 3 attempts with backoff
+    let response, lastErr;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 1000 * attempt)); // 1s, 2s backoff
+
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 600,
+          system: SYSTEM_PROMPT,
+          messages: clean
+        })
+      });
+
+      if (response.ok || (response.status !== 529 && response.status !== 503)) break;
+      lastErr = await response.text();
+      console.error(`Anthropic API attempt ${attempt + 1}: ${response.status} ${lastErr}`);
+    }
 
     if (!response.ok) {
-      const err = await response.text();
+      const err = lastErr || await response.text();
       console.error('Anthropic API error:', response.status, err);
       return res.status(502).json({ error: 'AI service unavailable', fallback: true });
     }
