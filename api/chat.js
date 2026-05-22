@@ -131,37 +131,29 @@ export default async function handler(req, res) {
       content: String(m.content || '').slice(0, 500)
     }));
 
-    // Model fallback: try stable model first, fall back to newer if needed
-    const MODELS = ['claude-3-5-haiku-20241022', 'claude-haiku-4-5-20251001'];
+    // Single model, 2 quick retries
     let response, lastErr;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 1000));
 
-    for (const model of MODELS) {
-      let ok = false;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt)); // 2s, 4s
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-3-5-haiku-20241022',
+          max_tokens: 600,
+          system: SYSTEM_PROMPT,
+          messages: clean
+        })
+      });
 
-        response = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01'
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: 600,
-            system: SYSTEM_PROMPT,
-            messages: clean
-          })
-        });
-
-        if (response.ok) { ok = true; break; }
-        if (response.status !== 529 && response.status !== 503) { ok = true; break; }
-        lastErr = await response.text();
-        console.error(`${model} attempt ${attempt + 1}: ${response.status}`);
-      }
-      if (ok && response.ok) break;
-      console.error(`All retries failed for ${model}, trying next...`);
+      if (response.ok || (response.status !== 529 && response.status !== 503)) break;
+      lastErr = await response.text();
+      console.error(`Attempt ${attempt + 1}: ${response.status}`);
     }
 
     if (!response.ok) {
