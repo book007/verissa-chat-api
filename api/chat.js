@@ -103,6 +103,8 @@ Never be pushy. Be confident, knowledgeable, and genuinely helpful. Make them fe
 - Do not repeat the same information if it was already covered in the conversation — refer back to it naturally
 - If the user seems ready to buy, be direct and guide them to the next step`;
 
+export const config = { maxDuration: 30 };
+
 export default async function handler(req, res) {
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -129,14 +131,14 @@ export default async function handler(req, res) {
       content: String(m.content || '').slice(0, 500)
     }));
 
-    // Model fallback chain + retry logic for 529/503 overload errors
-    const MODELS = ['claude-haiku-4-5-20251001', 'claude-3-5-haiku-20241022'];
+    // Model fallback: try stable model first, fall back to newer if needed
+    const MODELS = ['claude-3-5-haiku-20241022', 'claude-haiku-4-5-20251001'];
     let response, lastErr;
 
     for (const model of MODELS) {
       let ok = false;
-      for (let attempt = 0; attempt < 4; attempt++) {
-        if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt)); // 1.5s, 3s, 4.5s
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2000 * attempt)); // 2s, 4s
 
         response = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
@@ -159,7 +161,7 @@ export default async function handler(req, res) {
         console.error(`${model} attempt ${attempt + 1}: ${response.status}`);
       }
       if (ok && response.ok) break;
-      console.error(`All retries failed for ${model}, trying next model...`);
+      console.error(`All retries failed for ${model}, trying next...`);
     }
 
     if (!response.ok) {
