@@ -1,6 +1,6 @@
-// Verissa Concierge — AI Sales Assistant API Proxy
+// Verissa Concierge — AI Sales Assistant API Proxy (STREAMING)
 // Vercel Serverless Function — zero npm dependencies
-// Calls Claude Haiku via raw fetch()
+// Streams Claude responses token-by-token via SSE
 
 const SYSTEM_PROMPT = `You are "Verissa Concierge" — the AI sales assistant on verissa.ai, the website of Verissa, an agency that transforms hotel websites for the Italian hospitality market.
 
@@ -117,7 +117,6 @@ export default async function handler(req, res) {
   try {
     const { messages } = req.body;
 
-    // Basic validation
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'Messages required' });
     }
@@ -125,13 +124,11 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Conversation too long' });
     }
 
-    // Sanitize messages — only pass role + content, max 500 chars per user message
     const clean = messages.map(m => ({
       role: m.role === 'assistant' ? 'assistant' : 'user',
       content: String(m.content || '').slice(0, 500)
     }));
 
-    // Use Sonnet for reliable, fast responses (Haiku is overloaded on this tier)
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -140,27 +137,72 @@ export default async function handler(req, res) {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 600,
+        stream: true,
         system: SYSTEM_PROMPT,
         messages: clean
       })
     });
-    let lastErr;
 
     if (!response.ok) {
-      const err = lastErr || await response.text();
+      const err = await response.text();
       console.error('Anthropic API error:', response.status, err);
       return res.status(502).json({ error: 'AI service unavailable', fallback: true });
     }
 
-    const data = await response.json();
-    const text = data.content?.[0]?.text || '';
+    // Stream SSE to client
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
 
-    return res.status(200).json({ text });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE events from Anthropic
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6);
+        if (data === '[DONE]') continue;
+
+        try {
+          const evt = JSON.parse(data);
+          // Forward text deltas to client
+          if (evt.type === 'content_block_delta' && evt.delta?.text) {
+            res.write(`data: ${JSON.stringify({ t: evt.delta.text })}\n\n`);
+          }
+          // Signal completion
+          if (evt.type === 'message_stop') {
+            res.write(`data: [DONE]\n\n`);
+          }
+        } catch (e) {
+          // Skip unparseable lines
+        }
+      }
+    }
+
+    res.end();
 
   } catch (error) {
     console.error('Chat handler error:', error);
-    return res.status(500).json({ error: 'Internal error', fallback: true });
+    // If headers already sent, just end
+    if (res.headersSent) {
+      res.end();
+    } else {
+      return res.status(500).json({ error: 'Internal error', fallback: true });
+    }
   }
 }
