@@ -131,30 +131,22 @@ export default async function handler(req, res) {
       content: String(m.content || '').slice(0, 500)
     }));
 
-    // Single model, 2 quick retries
-    let response, lastErr;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) await new Promise(r => setTimeout(r, 1000));
-
-      response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 600,
-          system: SYSTEM_PROMPT,
-          messages: clean
-        })
-      });
-
-      if (response.ok || (response.status !== 529 && response.status !== 503)) break;
-      lastErr = await response.text();
-      console.error(`Attempt ${attempt + 1}: ${response.status}`);
-    }
+    // Use Sonnet for reliable, fast responses (Haiku is overloaded on this tier)
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-5-20241022',
+        max_tokens: 600,
+        system: SYSTEM_PROMPT,
+        messages: clean
+      })
+    });
+    let lastErr;
 
     if (!response.ok) {
       const err = lastErr || await response.text();
